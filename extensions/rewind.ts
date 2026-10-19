@@ -7,6 +7,7 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import { relative, resolve } from "node:path";
 import { DEFAULT_REWIND_CONFIG, loadRewindConfig, type RewindConfig } from "../src/config.ts";
 import {
@@ -146,7 +147,11 @@ export default function rewindExtension(pi: ExtensionAPI): void {
 		}
 		if (ctx.mode !== "tui") return;
 		removeTerminalInputListener = ctx.ui.onTerminalInput((data) => {
-			if (data !== "") {
+			// Releases and auto-repeat are not presses, but they must not clear a
+			// pending press either: Kitty reports a release between every pair of
+			// presses, so resetting here would make a double press unreachable.
+			if (isKeyRelease(data) || isKeyRepeat(data)) return undefined;
+			if (!matchesKey(data, "escape")) {
 				lastEscapeTime = 0;
 				return undefined;
 			}
