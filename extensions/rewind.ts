@@ -7,6 +7,7 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import { relative, resolve } from "node:path";
 import { DEFAULT_REWIND_CONFIG, loadRewindConfig, type RewindConfig } from "../src/config.ts";
 import {
@@ -145,7 +146,10 @@ export default function rewindExtension(pi: ExtensionAPI): void {
 		}
 		if (ctx.mode !== "tui") return;
 		removeTerminalInputListener = ctx.ui.onTerminalInput((data) => {
-			if (data !== "") {
+			// Escape arrives as a bare byte only on legacy terminals. Kitty and
+			// modifyOtherKeys-style protocols send structured key sequences, and
+			// Kitty also reports key releases, which must not count as a press.
+			if (isKeyRelease(data) || isKeyRepeat(data) || !matchesKey(data, "escape")) {
 				lastEscapeTime = 0;
 				return undefined;
 			}

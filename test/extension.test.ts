@@ -63,31 +63,40 @@ class MockPi {
 	}
 }
 
-test("turns double Escape into the rewind command", async () => {
+interface ShortcutHarness {
+	send: (data: string) => { consume?: boolean; data?: string } | undefined;
+	state: { editorText: string; idle: boolean };
+	restore: () => void;
+}
+
+async function createShortcutHarness(): Promise<ShortcutHarness> {
 	const agentDir = await mkdtemp(join(tmpdir(), "better-pi-rewind-shortcut-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const restore = () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	};
 
 	try {
 		const mock = new MockPi([]);
 		rewindExtension(mock as unknown as ExtensionAPI);
 		let terminalInputHandler: ((data: string) => { consume?: boolean; data?: string } | undefined) | undefined;
-		let editorText = "";
-		let idle = true;
+		const state = { editorText: "", idle: true };
 		const context = {
 			cwd: "/tmp/project",
 			mode: "tui",
 			hasUI: true,
-			isIdle: () => idle,
+			isIdle: () => state.idle,
 			isProjectTrusted: () => false,
 			ui: {
 				onTerminalInput: (handler: typeof terminalInputHandler) => {
 					terminalInputHandler = handler;
 					return () => {};
 				},
-				getEditorText: () => editorText,
+				getEditorText: () => state.editorText,
 				setEditorText: (text: string) => {
-					editorText = text;
+					state.editorText = text;
 				},
 				notify: () => {},
 			},
@@ -100,16 +109,49 @@ test("turns double Escape into the rewind command", async () => {
 
 		await mock.emit("session_start", { type: "session_start", reason: "startup" }, context);
 		assert.ok(terminalInputHandler);
-		assert.equal(terminalInputHandler(""), undefined);
-		assert.deepEqual(terminalInputHandler(""), { data: "\r" });
-		assert.equal(editorText, "/rewind");
+		return { send: (data) => terminalInputHandler?.(data), state, restore };
+	} catch (error) {
+		restore();
+		throw error;
+	}
+}
 
-		idle = false;
-		editorText = "";
-		assert.equal(terminalInputHandler(""), undefined);
+test("turns double Escape into the rewind command", async () => {
+	const harness = await createShortcutHarness();
+	try {
+		assert.equal(harness.send(""), undefined);
+		assert.deepEqual(harness.send(""), { data: "\r" });
+		assert.equal(harness.state.editorText, "/rewind");
+
+		harness.state.idle = false;
+		harness.state.editorText = "";
+		assert.equal(harness.send(""), undefined);
 	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		harness.restore();
+	}
+});
+
+test("recognizes Escape encodings from modern terminals", async () => {
+	const harness = await createShortcutHarness();
+	try {
+		// Kitty reports Escape as CSI 27 u, which the old byte comparison never matched.
+		assert.equal(harness.send("[27u"), undefined);
+		assert.deepEqual(harness.send("[27u"), { data: "\r" });
+		assert.equal(harness.state.editorText, "/rewind");
+
+		harness.state.editorText = "";
+
+		// A single Kitty press also reports a release: CSI 27 ; 1 : 3 u.
+		assert.equal(harness.send("[27u"), undefined);
+		assert.equal(harness.send("[27;1:3u"), undefined);
+		assert.equal(harness.state.editorText, "");
+
+		// Key repeat must not count as a second press either.
+		assert.equal(harness.send("[27u"), undefined);
+		assert.equal(harness.send("[27;1:2u"), undefined);
+		assert.equal(harness.state.editorText, "");
+	} finally {
+		harness.restore();
 	}
 });
 
